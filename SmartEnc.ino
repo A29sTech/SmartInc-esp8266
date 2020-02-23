@@ -26,12 +26,6 @@ LiquidCrystal_I2C lcd(0x27, 16, 2);
 OneWire oneWire(0); /* D3 is GPIO pin number. */
 DallasTemperature sensors(&oneWire);
 float currenTemp = 0.00;
-float updaTemp(){
-    sensors.requestTemperatures();
-    currenTemp = sensors.getTempCByIndex(0);
-    return currenTemp;
-}
-
 
 /* Handle GPIO */
 #define RELAY_ON LOW
@@ -46,11 +40,16 @@ bool S2 = false; /* RELAY_2 State; */
 
 /* Temp Settings */
 #define EEPINDX sizeof(float) /* Settings Will Be Saved As float; */
-float max_temp = 37.90f;
-float max_diff = 1.0f;
-float min_diff = 10.0f;
-float diff_r1 = 1.0f;
-float diff_r2 = 0.5f;
+float relay_1_max = 37.77f; /* INDEX 0 */
+float relay_1_min = 36.90f; /* INDEX 1 */
+float relay_2_max = 37.77f; /* INDEX 2 */
+float relay_2_min = 36.90f; /* INDEX 3 */
+float buzzer_max = 38.50f;  /* INDEX 4 */
+float buzzer_min = 35.00f;  /* INDEX 5 */
+
+/* ON OFF MODE */
+bool relay_1_mode = RELAY_ON;
+bool relay_2_mode = RELAY_ON;
 
 /* Http Request Handlers */
 #include "http_request_handlers.h"
@@ -60,11 +59,14 @@ void setup()
 
     /* EEPROM FUNCS */
     EEPROM.begin(512);
-    EEPROM_readMe( EEPINDX*0, max_temp);
-    EEPROM_readMe( EEPINDX*1 , max_diff);
-    EEPROM_readMe( EEPINDX*2, min_diff);
-    EEPROM_readMe( EEPINDX*3, diff_r1);
-    EEPROM_readMe( EEPINDX*4, diff_r2);
+    EEPROM_readMe( EEPINDX*0, relay_1_max);
+    EEPROM_readMe( EEPINDX*1, relay_1_min);
+    EEPROM_readMe( EEPINDX*2, relay_2_max);
+    EEPROM_readMe( EEPINDX*3, relay_2_min);
+    EEPROM_readMe( EEPINDX*4, buzzer_max);
+    EEPROM_readMe( EEPINDX*5, buzzer_min);
+    EEPROM_readMe( EEPINDX*5+sizeof(bool), relay_1_mode);
+    EEPROM_readMe( EEPINDX*5+(sizeof(bool)*2), relay_2_mode);
 
 
     /* GPIO OUTPUT */
@@ -74,6 +76,9 @@ void setup()
 
     /* DHT Setup with pin 14 and DHT11 Sensor */
     dht.setup(14, DHTesp::DHT11);
+    
+    /* Start DS18B20 Sendor */
+    sensors.begin();
         
 	  /* initialize the LCD */
 	  lcd.begin();
@@ -94,76 +99,147 @@ void setup()
     server.begin();
 }
 
+
+
+
+
+
+
+
+
+bool updaTemp();/* updaTemp Function Declaration */
+void Display(); /* Display Function Declaration */
 void loop()
 {
-    /* get time betwen */
+
+
+        /* get time betwen */
     unsigned long currentMillis = millis();
     /* Read DHT Sensor At Its Interval */
     if (currentMillis - previousMillis >= dht.getMinimumSamplingPeriod()) {
         dhtHum = dht.getHumidity();
         dhTemp = dht.getTemperature();
+        previousMillis = millis();
     }
-    /* Update DS18B20 Temprature Sensor */
-    updaTemp();
-    /* Check If Temptrature Sensor Is Connected or not */
-    if( currenTemp == -127.00) {
+  
+    /* Update DS18B20 Temprature Sensor And Check ERROR */
+    if ( updaTemp() ){
         digitalWrite( BUZZER_PIN, HIGH );
         lcd.clear();
         lcd.print("DS18B20 Sensor");
         lcd.setCursor(0, 1); // top left
         lcd.print("   Not Connected");
-    } else {
-        /* OutPut Control Structures */
-        if ( currenTemp >= max_temp ) {
-            digitalWrite( RELAY_1_PIN, RELAY_OFF );
-            digitalWrite( RELAY_2_PIN, RELAY_OFF );
-            S1 = false; /* Set Relay 1 State To OFF */
-            S2 = false; /* Set Relay 2 State To OFF */
-
-            /* Buzzer Control HIGH */
-            if  ( currenTemp > (max_temp + max_diff) ) {
-                digitalWrite( BUZZER_PIN, HIGH );
-            } else {
-                digitalWrite( BUZZER_PIN, LOW );
-            } 
-        } else {
-            /* Relay Control LOW */
-            if ( currenTemp <= (max_temp - diff_r1)) {
-                digitalWrite(RELAY_1_PIN, RELAY_ON);
-                S1 = true; /* Set Relay 1 State To ON */
-            }
-            if ( currenTemp <= (max_temp - diff_r2)) {
-                digitalWrite(RELAY_2_PIN, RELAY_ON);
-                S2 = true; /* Set Relay 2 State To ON */
-            }
-            /* Buzzer Control LOW */
-            if ( currenTemp < (max_temp - min_diff)){
-                digitalWrite( BUZZER_PIN, HIGH );
-            } else {
-                digitalWrite( BUZZER_PIN, LOW );
-            }
-        }
-
-            /* Writing To Display */
-            lcd.setCursor(0, 0);
-            lcd.print( currenTemp );
-            lcd.write( byte( 2 ) );
-            lcd.print( " " );
-            if( S1 == true || S2 == true ){
-                lcd.write( byte( 0 ) );
-            } else {
-                lcd.write( byte( 1 ) );
-            }
-            lcd.print( "  " );
-            lcd.print( max_temp );
-            lcd.print( "#" );
-            /* Go To Secend Line */
-            lcd.setCursor(0, 1);
-            lcd.print( dhTemp );
-            lcd.write( byte( 2 ) );
-            lcd.print( "    " );
-            lcd.print( dhtHum );
-            lcd.print( "%" );
+        delay(500);
+        return;
     }
-    delay( 1000 );
+
+    /* --------------------ENABLE GPIO IF----------------------- */
+
+    /* is Relay 1 Less Then Eql Minimum  */
+    if ( currenTemp <= relay_1_min ) {
+        digitalWrite(RELAY_1_PIN, relay_1_mode);
+        S1 = !relay_1_mode;
+    }
+    /* is Relay 1 Gretter Then Eql Maximum */
+    if ( currenTemp >= relay_1_max ) {
+        digitalWrite(RELAY_1_PIN, !relay_1_mode);
+        S1 = relay_1_mode;
+    }
+    
+    /* is Relay 2 Less Then Eql Minimum */
+    if ( currenTemp <= relay_2_min ) {
+        digitalWrite(RELAY_2_PIN, relay_2_mode);
+        S2 = !relay_2_mode;
+    }
+    /* is Relay 2 Gretter Then Eql Maximum */
+    if ( currenTemp >= relay_2_max ) {
+        digitalWrite(RELAY_2_PIN, !relay_2_mode);
+        S2 = relay_2_mode;
+    }
+
+    /* Logic For Buzzer ON & OFF */
+    if ( currenTemp >= buzzer_max || currenTemp <= buzzer_min ) {
+        digitalWrite( BUZZER_PIN, HIGH );
+    } else {
+        digitalWrite( BUZZER_PIN, LOW );
+    }
+
+
+    /* Display Info To LCD and Delay */
+    Display();
+    delay( 100 );
+}
+
+
+
+
+
+
+
+
+/* Update Temprature Variable With Current Temprarture */
+bool updaTemp()
+{
+    /* Request For Temprature Via ! Wire */
+    sensors.requestTemperatures();
+    float new_temp = sensors.getTempCByIndex(0);
+    /* Check Sensor Error */
+    if ( new_temp == -127.00 ) {
+        return true;
+    }
+    /* Else */
+    currenTemp = new_temp;
+    return false;
+}
+
+
+
+
+
+
+
+
+/* Write To Display */
+void Display()
+{
+    /* Writing To Display */
+    lcd.setCursor(0, 0);
+    lcd.print( currenTemp );
+    lcd.write( byte( 2 ) );
+
+    lcd.setCursor(7, 0);
+    if( relay_1_mode == RELAY_ON ){
+        lcd.write( byte( 0 ) );
+    } else {
+        lcd.write( byte( 1 ) );
+    }
+    lcd.print( " " );
+    if( relay_2_mode == RELAY_ON ){
+        lcd.write( byte( 0 ) );
+    } else {
+        lcd.write( byte( 1 ) );
+    }
+    lcd.print( " | " );
+    
+    /* Relay 1 State Monitor */
+    if ( S1 ) {
+        lcd.write( byte( 0 ) );
+    } else {
+        lcd.write( byte( 1 ) );
+    }
+    lcd.print( " ");
+    /* Relay 2 State Monitor */
+    if ( S2 ) {
+        lcd.write( byte( 0 ) );
+    } else {
+        lcd.write( byte( 1 ) );
+    }
+    
+    /* Go To Secend Line */
+    lcd.setCursor(0, 1);
+    lcd.print( dhTemp );
+    lcd.write( byte( 2 ) );
+    lcd.print( "    " );
+    lcd.print( dhtHum );
+    lcd.print( "%" );
 }
